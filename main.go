@@ -1,23 +1,55 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/stevenwilkin/fx/currencybeacon"
 
 	_ "github.com/joho/godotenv/autoload"
 )
 
+var (
+	rates json.RawMessage
+	m     sync.Mutex
+)
+
+func handler(w http.ResponseWriter, r *http.Request) {
+	m.Lock()
+	defer m.Unlock()
+
+	w.Write(rates)
+}
+
 func main() {
-	cb := currencybeacon.NewCurrencyBeaconFromEnv()
+	go func() {
+		cb := currencybeacon.NewCurrencyBeaconFromEnv()
+		ticker := time.NewTicker(10 * time.Minute)
 
-	rates, err := cb.GetRates()
+		for {
+			if results, err := cb.GetRates(); err != nil {
+				slog.Error(err.Error())
+			} else {
+				m.Lock()
+				rates = results
+				m.Unlock()
+			}
 
-	if err != nil {
-		fmt.Println(err.Error())
-		os.Exit(1)
+			<-ticker.C
+		}
+	}()
+
+	port := "8080"
+	if wwwPort := os.Getenv("WWW_PORT"); len(wwwPort) > 0 {
+		port = wwwPort
 	}
 
-	fmt.Println(string(rates))
+	slog.Info("Starting", slog.String("port", port))
+	http.HandleFunc("/", handler)
+	http.ListenAndServe(fmt.Sprintf(":%s", port), nil)
 }
